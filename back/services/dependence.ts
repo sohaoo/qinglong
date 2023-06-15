@@ -9,11 +9,12 @@ import {
   unInstallDependenceCommandTypes,
   DependenceModel,
 } from '../data/dependence';
-import { spawn } from 'child_process';
+import { spawn } from 'cross-spawn';
 import SockService from './sock';
 import { FindOptions, Op } from 'sequelize';
 import { concurrentRun } from '../config/util';
 import dayjs from 'dayjs';
+import { runCronWithLimit } from '../shared/pLimit';
 
 @Service()
 export default class DependenceService {
@@ -78,7 +79,7 @@ export default class DependenceService {
   ): Promise<Dependence[]> {
     let condition = { ...query, type: DependenceTypes[type as any] };
     if (searchValue) {
-      const encodeText = encodeURIComponent(searchValue);
+      const encodeText = encodeURI(searchValue);
       const reg = {
         [Op.or]: [
           { [Op.like]: `%${searchValue}%` },
@@ -104,20 +105,9 @@ export default class DependenceService {
     isInstall: boolean = true,
     force: boolean = false,
   ) {
-    concurrentRun(
-      docs.map((dep) => async () => {
-        const status = isInstall
-          ? DependenceStatus.installing
-          : DependenceStatus.removing;
-        await DependenceModel.update({ status }, { where: { id: dep.id } });
-        return await this.installOrUninstallDependencies(
-          [dep],
-          isInstall,
-          force,
-        );
-      }),
-      1,
-    );
+    docs.forEach((dep) => {
+      this.installOrUninstallDependencies([dep], isInstall, force);
+    });
   }
 
   public async reInstall(ids: number[]): Promise<Dependence[]> {
@@ -157,72 +147,34 @@ export default class DependenceService {
     isInstall: boolean = true,
     force: boolean = false,
   ) {
-    return new Promise(async (resolve) => {
-      if (dependencies.length === 0) {
-        resolve(null);
-        return;
-      }
-      const socketMessageType = !force
-        ? 'installDependence'
-        : 'uninstallDependence';
-      const depNames = dependencies.map((x) => x.name).join(' ');
-      const depRunCommand = (
-        isInstall
-          ? InstallDependenceCommandTypes
-          : unInstallDependenceCommandTypes
-      )[dependencies[0].type as any];
-      const actionText = isInstall ? '安装' : '删除';
-      const depIds = dependencies.map((x) => x.id) as number[];
-      const startTime = dayjs();
+    return runCronWithLimit(() => {
+      return new Promise(async (resolve) => {
+        if (dependencies.length === 0) {
+          resolve(null);
+          return;
+        }
 
-      const message = `开始${actionText}依赖 ${depNames}，开始时间 ${startTime.format(
-        'YYYY-MM-DD HH:mm:ss',
-      )}\n\n`;
-      this.sockService.sendMessage({
-        type: socketMessageType,
-        message,
-        references: depIds,
-      });
-      await this.updateLog(depIds, message);
+        const depIds = dependencies.map((x) => x.id) as number[];
+        const status = isInstall
+          ? DependenceStatus.installing
+          : DependenceStatus.removing;
+        await DependenceModel.update({ status }, { where: { id: depIds } });
 
-      const cp = spawn(`${depRunCommand} ${depNames}`, { shell: '/bin/bash' });
+        const socketMessageType = !force
+          ? 'installDependence'
+          : 'uninstallDependence';
+        const depNames = dependencies.map((x) => x.name).join(' ');
+        const depRunCommand = (
+          isInstall
+            ? InstallDependenceCommandTypes
+            : unInstallDependenceCommandTypes
+        )[dependencies[0].type as any];
+        const actionText = isInstall ? '安装' : '删除';
+        const startTime = dayjs();
 
-      cp.stdout.on('data', async (data) => {
-        this.sockService.sendMessage({
-          type: socketMessageType,
-          message: data.toString(),
-          references: depIds,
-        });
-        await this.updateLog(depIds, data.toString());
-      });
-
-      cp.stderr.on('data', async (data) => {
-        this.sockService.sendMessage({
-          type: socketMessageType,
-          message: data.toString(),
-          references: depIds,
-        });
-        await this.updateLog(depIds, data.toString());
-      });
-
-      cp.on('error', async (err) => {
-        this.sockService.sendMessage({
-          type: socketMessageType,
-          message: JSON.stringify(err),
-          references: depIds,
-        });
-        await this.updateLog(depIds, JSON.stringify(err));
-        resolve(null);
-      });
-
-      cp.on('close', async (code) => {
-        const endTime = dayjs();
-        const isSucceed = code === 0;
-        const resultText = isSucceed ? '成功' : '失败';
-
-        const message = `\n依赖${actionText}${resultText}，结束时间 ${endTime.format(
+        const message = `开始${actionText}依赖 ${depNames}，开始时间 ${startTime.format(
           'YYYY-MM-DD HH:mm:ss',
-        )}，耗时 ${endTime.diff(startTime, 'second')} 秒`;
+        )}\n\n`;
         this.sockService.sendMessage({
           type: socketMessageType,
           message,
@@ -230,24 +182,71 @@ export default class DependenceService {
         });
         await this.updateLog(depIds, message);
 
-        let status = null;
-        if (isSucceed) {
-          status = isInstall
-            ? DependenceStatus.installed
-            : DependenceStatus.removed;
-        } else {
-          status = isInstall
-            ? DependenceStatus.installFailed
-            : DependenceStatus.removeFailed;
-        }
-        await DependenceModel.update({ status }, { where: { id: depIds } });
+        const cp = spawn(`${depRunCommand} ${depNames}`, {
+          shell: '/bin/bash',
+        });
 
-        // 如果删除依赖成功或者强制删除
-        if ((isSucceed || force) && !isInstall) {
-          this.removeDb(depIds);
-        }
+        cp.stdout.on('data', async (data) => {
+          this.sockService.sendMessage({
+            type: socketMessageType,
+            message: data.toString(),
+            references: depIds,
+          });
+          await this.updateLog(depIds, data.toString());
+        });
 
-        resolve(null);
+        cp.stderr.on('data', async (data) => {
+          this.sockService.sendMessage({
+            type: socketMessageType,
+            message: data.toString(),
+            references: depIds,
+          });
+          await this.updateLog(depIds, data.toString());
+        });
+
+        cp.on('error', async (err) => {
+          this.sockService.sendMessage({
+            type: socketMessageType,
+            message: JSON.stringify(err),
+            references: depIds,
+          });
+          await this.updateLog(depIds, JSON.stringify(err));
+        });
+
+        cp.on('close', async (code) => {
+          const endTime = dayjs();
+          const isSucceed = code === 0;
+          const resultText = isSucceed ? '成功' : '失败';
+
+          const message = `\n依赖${actionText}${resultText}，结束时间 ${endTime.format(
+            'YYYY-MM-DD HH:mm:ss',
+          )}，耗时 ${endTime.diff(startTime, 'second')} 秒`;
+          this.sockService.sendMessage({
+            type: socketMessageType,
+            message,
+            references: depIds,
+          });
+          await this.updateLog(depIds, message);
+
+          let status = null;
+          if (isSucceed) {
+            status = isInstall
+              ? DependenceStatus.installed
+              : DependenceStatus.removed;
+          } else {
+            status = isInstall
+              ? DependenceStatus.installFailed
+              : DependenceStatus.removeFailed;
+          }
+          await DependenceModel.update({ status }, { where: { id: depIds } });
+
+          // 如果删除依赖成功或者强制删除
+          if ((isSucceed || force) && !isInstall) {
+            this.removeDb(depIds);
+          }
+
+          resolve(null);
+        });
       });
     });
   }

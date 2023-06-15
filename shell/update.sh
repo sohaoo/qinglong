@@ -31,7 +31,7 @@ output_list_add_drop() {
   local list=$1
   local type=$2
   if [[ -s $list ]]; then
-    echo -e "检测到有$type的定时任务：\n"
+    echo -e "检测到有${type}的定时任务：\n"
     cat $list
     echo
   fi
@@ -44,7 +44,7 @@ del_cron() {
   local path=$2
   local detail=""
   local ids=""
-  echo -e "开始尝试自动删除失效的定时任务...\n"
+  echo -e "开始尝试自动删除失效的定时任务..."
   for cron in $(cat $list_drop); do
     local id=$(cat $list_crontab_user | grep -E "$cmd_task.* $cron" | perl -pe "s|.*ID=(.*) $cmd_task.* $cron\.*|\1|" | head -1 | awk -F " " '{print $1}')
     if [[ $ids ]]; then
@@ -54,7 +54,7 @@ del_cron() {
     fi
     cron_file="$dir_scripts/${cron}"
     if [[ -f $cron_file ]]; then
-      cron_name=$(grep "new Env" $cron_file | awk -F "\(" '{print $2}' | awk -F "\)" '{print $1}' | sed 's:^.\(.*\).$:\1:' | head -1)
+      cron_name=$(grep "new Env" $cron_file | awk -F "\(" '{print $2}' | awk -F "\)" '{print $1}' | sed 's:.*\('\''\|"\)\([^"'\'']*\)\('\''\|"\).*:\2:' | sed 's:"::g' | sed "s:'::g" | head -1)
       rm -f $cron_file
     fi
     [[ -z $cron_name ]] && cron_name="$cron"
@@ -75,7 +75,7 @@ del_cron() {
 add_cron() {
   local list_add=$1
   local path=$2
-  echo -e "开始尝试自动添加定时任务...\n"
+  echo -e "开始尝试自动添加定时任务..."
   local detail=""
   cd $dir_scripts
   for file in $(cat $list_add); do
@@ -92,7 +92,7 @@ add_cron() {
                         s|  | |g;
                     }" | sort -u | head -1
       )
-      cron_name=$(grep "new Env" $file | awk -F "\(" '{print $2}' | awk -F "\)" '{print $1}' | sed 's:^.\(.*\).$:\1:' | head -1)
+      cron_name=$(grep "new Env" $file | awk -F "\(" '{print $2}' | awk -F "\)" '{print $1}' | sed 's:.*\('\''\|"\)\([^"'\'']*\)\('\''\|"\).*:\2:' | sed 's:"::g' | sed "s:'::g" | head -1)
       [[ -z $cron_name ]] && cron_name="$file_name"
       [[ -z $cron_line ]] && cron_line=$(grep "cron:" $file | awk -F ":" '{print $2}' | head -1 | xargs)
       [[ -z $cron_line ]] && cron_line=$(grep "cron " $file | awk -F "cron \"" '{print $2}' | awk -F "\" " '{print $1}' | head -1 | xargs)
@@ -193,7 +193,7 @@ update_raw() {
                       s|  | |g;
                   }" | sort -u | head -1
       )
-      cron_name=$(grep "new Env" $raw_file_name | awk -F "\(" '{print $2}' | awk -F "\)" '{print $1}' | sed 's:^.\(.*\).$:\1:' | head -1)
+      cron_name=$(grep "new Env" $raw_file_name | awk -F "\(" '{print $2}' | awk -F "\)" '{print $1}' | sed 's:.*\('\''\|"\)\([^"'\'']*\)\('\''\|"\).*:\2:' | sed 's:"::g' | sed "s:'::g" | head -1)
       [[ -z $cron_name ]] && cron_name="$raw_file_name"
       [[ -z $cron_line ]] && cron_line=$(grep "cron:" $raw_file_name | awk -F ":" '{print $2}' | head -1 | xargs)
       [[ -z $cron_line ]] && cron_line=$(grep "cron " $raw_file_name | awk -F "cron \"" '{print $2}' | awk -F "\" " '{print $1}' | head -1 | xargs)
@@ -243,10 +243,9 @@ update_qinglong() {
   echo -e "使用 ${mirror} 源更新...\n"
   export isFirstStartServer=false
 
-  local all_branch=$(cd ${dir_root} && git branch -a)
   local primary_branch="master"
-  if [[ "${all_branch}" =~ "${current_branch}" ]]; then
-    primary_branch="${current_branch}"
+  if [[ "${QL_BRANCH}" == "develop" ]]; then
+    primary_branch="develop"
   fi
   [[ -f $dir_root/package.json ]] && ql_depend_old=$(cat $dir_root/package.json)
   reset_romote_url ${dir_root} "https://${mirror}.com/whyour/qinglong.git" ${primary_branch}
@@ -364,10 +363,10 @@ gen_list_repo() {
   done
   files=$(eval $cmd | sed 's/^..//')
   if [[ $path ]]; then
-    files=$(echo "$files" | egrep $path)
+    files=$(echo "$files" | egrep "$path")
   fi
   if [[ $blackword ]]; then
-    files=$(echo "$files" | egrep -v $blackword)
+    files=$(echo "$files" | egrep -v "$blackword")
   fi
 
   cp -f $file_notify_js "${dir_scripts}/${uniq_path}"
@@ -375,7 +374,7 @@ gen_list_repo() {
 
   if [[ $dependence ]]; then
     cd ${repo_path}
-    results=$(eval $cmd | sed 's/^..//' | egrep $dependence)
+    results=$(eval $cmd | sed 's/^..//' | egrep "$dependence")
     for _file in ${results}; do
       file_path=$(dirname $_file)
       make_dir "${dir_scripts}/${uniq_path}/${file_path}"
@@ -388,7 +387,7 @@ gen_list_repo() {
   fi
 
   for file in ${files}; do
-    filename=$(basename $file)
+    filename=$(basename "$file")
     cp -f $file "$dir_scripts/${uniq_path}/${filename}"
     echo "${uniq_path}/${filename}" >>"$dir_list_tmp/${uniq_path}_scripts.list"
     # cron_id=$(cat $list_crontab_user | grep -E "$cmd_task.* ${uniq_path}_${filename}" | perl -pe "s|.*ID=(.*) $cmd_task.* ${uniq_path}_${filename}\.*|\1|" | head -1 | awk -F " " '{print $1}')

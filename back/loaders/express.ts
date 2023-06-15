@@ -10,11 +10,9 @@ import Container from 'typedi';
 import OpenService from '../services/open';
 import rewrite from 'express-urlrewrite';
 import UserService from '../services/user';
-import handler from 'serve-handler';
 import * as Sentry from '@sentry/node';
 import { EnvModel } from '../data/env';
 import { errors } from 'celebrate';
-import path from 'path';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { serveEnv } from '../config/serverEnv';
 
@@ -111,8 +109,7 @@ export default ({ app }: { app: Application }) => {
     if (
       Object.keys(authInfo).length === 2 &&
       authInfo.username === 'admin' &&
-      authInfo.password === 'admin' &&
-      envCount === 0
+      authInfo.password === 'admin'
     ) {
       isInitialized = false;
     }
@@ -171,18 +168,6 @@ export default ({ app }: { app: Application }) => {
       }
       return next(err);
     },
-  );
-
-  app.use(
-    Sentry.Handlers.errorHandler({
-      shouldHandleError(error) {
-        // 排除 SequelizeUniqueConstraintError / NotFound
-        return (
-          !['SequelizeUniqueConstraintError'].includes(error.name) ||
-          !['Not Found'].includes(error.message)
-        );
-      },
-    }),
   );
 
   app.use(
